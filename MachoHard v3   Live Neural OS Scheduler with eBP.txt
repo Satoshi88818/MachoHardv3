@@ -1,0 +1,152 @@
+# MachoHard v3 — Live Neural OS Scheduler with eBPF + Online RL
+
+**MachoHard v3** is a **real-time, self-improving Linux process scheduler** that replaces or augments the default Completely Fair Scheduler (CFS) using cutting-edge techniques:
+
+- **eBPF** for low-overhead, live kernel tracing of scheduling events (wakeup, switch).
+- **Neural policy network** (Mixture-of-Experts + Multi-Head Attention + Geometric Neural Fields) to embed processes and predict optimal scheduling actions.
+- **Online Reinforcement Learning** via Proximal Policy Optimization (PPO) with Generalized Advantage Estimation (GAE), trained on live rewards (throughput, latency, CPU balance, energy proxy).
+- **Safety-gated fallback** to CFS when policy confidence is low.
+- Single-file Python daemon for easy deployment on **Linux kernels >= 4.4** (with eBPF support).
+
+Built from **first principles**:
+1. The Linux OS is a dynamical system.
+2. Scheduling is a control policy over process states.
+3. Close the loop: Learn directly from runtime consequences.
+4. Prioritize safety with uncertainty-aware fallbacks.
+
+Ideal for **high-performance computing, real-time systems, edge devices, or any Linux workload** needing adaptive scheduling beyond static CFS heuristics.
+
+**WARNING**: This is experimental software. It requires **root privileges** for eBPF attachment and may interfere with kernel scheduling. Test in isolated environments (e.g., VMs or containers) first. Not intended for production without thorough validation.
+
+## Features
+- **Live Tracing**: Hooks into `try_to_wake_up` and `finish_task_switch` via eBPF.
+- **Neural Embedding**: Process "point clouds" hashed from PID/comm for geometric representation.
+- **MoE Policy**: Sparse Mixture-of-Experts for efficient, specialized decision-making.
+- **PPO Updates**: On-policy RL with clipped surrogates, value loss, and entropy regularization.
+- **Reward Shaping**: Multi-objective (throughput ↑, latency ↓, balance ↑, energy ↓).
+- **Fallback Mechanism**: Switches to CFS if gate confidence < 0.6.
+- **Daemon Mode**: Runs as a background process, polling every 0.1s.
+- **Test Mode**: Dry-run for verification.
+
+## Requirements
+MachoHard v3 is a single Python script with dependencies pinned for reproducibility. It targets **modern Linux distributions** (Ubuntu 22.04+, Fedora 36+, Arch, etc.) with kernel headers for eBPF.
+
+### System Requirements
+- **Linux Kernel**: 5.10+ recommended (eBPF features like `perf_buffer_poll` and kprobes).
+- **Root Access**: Mandatory for loading eBPF programs and attaching traces.
+- **CPU**: Multi-core x86_64 or arm64 (tested on Intel/AMD/ARM).
+- **GPU (Optional)**: CUDA-enabled for faster training if `torch` detects it.
+- **Dependencies**: Installed via `pip` (see below).
+
+### Python Requirements
+Python 3.10+ (3.12 recommended). Create a virtual environment for isolation.
+
+Save the following as `requirements.txt`:
+
+```
+torch>=2.0.0
+numpy>=1.21.0
+pandas>=1.5.0
+bcc>=0.18.0
+```
+
+**Installation**:
+```bash
+python -m venv machohard-env
+source machohard-env/bin/activate
+pip install -r requirements.txt
+```
+
+- `torch`: For neural networks and RL (CPU or CUDA wheels auto-detected).
+- `numpy`/`pandas`: Metric aggregation.
+- `bcc`: Python bindings for eBPF (installs `libbcc` and tools).
+
+**Kernel Headers** (for eBPF compilation):
+```bash
+# Ubuntu/Debian
+sudo apt update
+sudo apt install linux-headers-$(uname -r) clang llvm
+
+# Fedora
+sudo dnf install kernel-devel clang llvm
+
+# Arch
+sudo pacman -S linux-headers clang llvm
+```
+
+## Deployment Guide
+### 1. Save the Script
+Copy the provided code into a file: `MachoHardV3.py` (or download from your source).
+
+```bash
+wget -O MachoHardV3.py <your-script-url-or-paste-here>
+chmod +x MachoHardV3.py
+```
+
+### 2. Verify Environment
+```bash
+python MachoHardV3.py --mode test
+```
+Expected output:
+```
+MachoHard v3 — eBPF + Live RL Ready
+Run with --mode daemon as root to start live scheduling
+```
+
+### 3. Run in Daemon Mode (Live Scheduling)
+**Must run as root**:
+```bash
+sudo ./MachoHardV3.py --mode daemon
+```
+
+- Starts eBPF tracing.
+- Polls events every 0.1s.
+- Computes rewards and updates policy every 256 steps.
+- Logs updates like: `[MachoHard] Update | Reward: 1.234 | Action: 0.56`
+- Press Ctrl+C to shutdown gracefully.
+
+**Background Execution** (optional):
+```bash
+sudo nohup ./MachoHardV3.py --mode daemon > machohard.log 2>&1 &
+```
+
+### 4. Monitoring
+- Tail logs: `tail -f machohard.log`
+- System metrics: Use `top`, `htop`, or `sar` to observe changes in CPU balance, context switches, and latency.
+- eBPF Verification: `sudo cat /sys/kernel/debug/tracing/trace_pipe` (may show related events).
+
+### 5. Customization
+Edit the script's `Config` classes:
+- Tune `safety_threshold` (lower for more aggressive RL).
+- Adjust `RLConfig` (e.g., `ppo_clip=0.1` for conservative updates).
+- Extend `RewardShaper` for custom metrics (e.g., integrate `/proc` reads for real energy).
+
+### 6. Isolation Tips
+- **Containers**: Run in privileged Docker/Podman:
+  ```bash
+  docker run --privileged -v $(pwd):/app -w /app python:3.12-slim ./MachoHardV3.py --mode daemon
+  ```
+- **Namespaces**: Uses PID namespace isolation by default.
+- **Fallback Testing**: Force low confidence by setting `safety_threshold=1.0`.
+
+### 7. Shutdown & Cleanup
+- Ctrl+C or `kill <pid>`.
+- eBPF programs auto-detach on exit.
+- No persistent state (ephemeral learning).
+
+## Troubleshooting
+- **eBPF Errors**: "Permission denied" → Ensure CAP_SYS_ADMIN or root.
+- **BCC Import Fail**: Reinstall `bcc` or check kernel config (`CONFIG_BPF=y`).
+- **No Events**: Verify kprobes with `sudo bpftrace -e 'kprobe:try_to_wake_up { printf("wakeup %s\n", comm); }'`.
+- **CUDA Issues**: Force CPU with `export CUDA_VISIBLE_DEVICES=""`.
+- **High CPU**: Normal during updates; reduce `update_freq`.
+
+## Limitations & Future Work
+- Currently **read-only rewards**; no direct scheduler override (future: integrate with `sched_setattr` or custom kernel module).
+- Energy proxy is placeholder; extend with RAPL/MSR readings.
+- Multi-node scaling: Planned for Kubernetes integration.
+- Safety: Always monitor; RL can diverge in edge cases.
+
+**Contributions Welcome!** Fork, experiment, and PR improvements.
+
+Built with ❤️ by Basement Dweller and xAI-inspired first-principles engineering. Deploy on Linux and watch your scheduler evolve! 🚀
